@@ -2,6 +2,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
+
+#define CORE_DEBUG 1
+
+#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
+#define BYTE_TO_BINARY(byte)  \
+  (byte & 0x80 ? '1' : '0'), \
+  (byte & 0x40 ? '1' : '0'), \
+  (byte & 0x20 ? '1' : '0'), \
+  (byte & 0x10 ? '1' : '0'), \
+  (byte & 0x08 ? '1' : '0'), \
+  (byte & 0x04 ? '1' : '0'), \
+  (byte & 0x02 ? '1' : '0'), \
+  (byte & 0x01 ? '1' : '0') 
 
 // Initialisation Macros:
 #define CORE_RAM_SIZE 0xFFFF
@@ -11,7 +25,7 @@
 #define CORE_STACK_PAGE 0x01 // 1st Page for the Stack
 #define CORE_STACK_SIZE 0xFF // Size of the stack (0x0100 -> 0x01FF)
 #define CORE_STACK_POINTER_INIT 0xFF // Initial Address to init the SP to
-#define CORE_STACK_ADDRESS(X) ((CORE_STACK_PAGE << 8) + X->sp) // Return Full 2 Byte Stack Address (0x01XX)
+#define CORE_STACK_ADDRESS(X, Y) ((CORE_STACK_PAGE << 8) + (uint8_t)(X->sp + Y)) // Return Full 2 Byte Stack Address (0x01XX)
 
 // Flag Macros:
 #define FLAG_CARRY	0x01
@@ -119,16 +133,45 @@
 #define ADC_IND_X	0x61
 #define ADC_IND_Y	0x71
 
+#define SBC_I		0xE9
+#define SBC_ZPG		0xE5
+#define SBC_ZPG_X	0xF5
+#define SBC_A		0xED
+#define SBC_A_X		0xFD
+#define SBC_A_Y		0xF9
+#define SBC_IND_X	0xE1
+#define SBC_IND_Y	0xF1
+
+#define CMP_I		0xC9
+#define CMP_ZPG		0xC5
+#define CMP_ZPG_X	0xD5
+#define CMP_A		0xCD
+#define CMP_A_X		0xDD
+#define CMP_A_Y		0xD9
+#define CMP_IND_X	0xC1
+#define CMP_IND_Y	0xD1
+
+#define CPX_I		0xE0
+#define CPX_ZPG		0xE4
+#define CPX_A		0xEC
+
+#define CPY_I		0xC0
+#define CPY_ZPG		0xC4
+#define CPY_A		0xCC
+
 // Increment/Decrements:
 #define INC_ZPG		0xE6
 #define INC_ZPG_X	0xF6
 #define INC_A		0xEE
 #define INC_A_X		0xFE
 
+#define DEC_ZPG		0xC6
+#define DEC_ZPG_X	0xD6
+#define DEC_A		0xCE
+#define DEC_A_X		0xDE
+
 #define INX		0xE8
 #define INY		0xC8
-
-#define DEC		0xDE
 #define DEX		0xCA
 #define DEY		0x88
 
@@ -156,6 +199,12 @@
 #define ROR_ZPG_X	0x76
 #define ROR_A		0x6E
 #define ROR_A_X		0x7E
+
+// Jumps:
+#define JMP_A		0x4C
+#define JMP_IND		0x6C
+#define JSR_A		0x20
+#define RTS		0x60
 
 // Flag Sets/Clears
 #define CLC		0x18
@@ -201,7 +250,7 @@ typedef struct core_t {
 // Memory Addressing Modes:
 // Each have a difference method of returning a 16bit Memory Address:
 uint16_t addr_immediate(core_t *core) {
-	return ++(core->pc);
+	return (uint16_t)(++(core->pc));
 }
 
 uint16_t addr_zeropage(core_t *core) {
@@ -232,6 +281,18 @@ uint16_t addr_absolute_y(core_t *core) {
 	uint8_t lsb = core->ram[++(core->pc)];
 	uint8_t msb = core->ram[++(core->pc)];
 	return ((msb << 8) + lsb) + core->y;
+}
+
+// Used by JMP:
+uint16_t addr_indirect(core_t *core) {
+	uint8_t lsb = core->ram[++(core->pc)];
+	uint8_t msb = core->ram[++(core->pc)];
+	uint16_t indirect = ((msb << 8) + lsb);
+
+	uint8_t final_lsb = core->ram[indirect];
+	uint8_t final_msb = core->ram[indirect+1];
+
+	return ((final_msb << 8) + final_lsb);
 }
 
 uint16_t addr_indirect_x(core_t *core) {
@@ -272,20 +333,39 @@ core_t *init_core() {
 
 // Debugging:
 void dump_core_state(core_t *core) {
+
 	printf("Register A (Accumulator): 0x%.2x\n", core->a);
+	printf("Register A: "BYTE_TO_BINARY_PATTERN"\n", 
+			BYTE_TO_BINARY(core->a));
 
 	printf("Register X:\t\t0x%.2x\n", core->x);
 	printf("Register Y:\t\t0x%.2x\n", core->y);
 
-	printf("Zero Flag:\t\t%d\n",  core->fzero);
-	printf("Sign Flag:\t\t%d\n",  core->fsign);
 	printf("Carry Flag:\t\t%d\n", core->fcarry);
+	printf("Zero Flag:\t\t%d\n",  core->fzero);
+
 	printf("Overflow Flag:\t\t%d\n", core->foverflow);
+	printf("Sign Flag:\t\t%d\n",  core->fsign);
 
 	printf("Program Counter:\t0x%.4x\n", core->pc);
-	printf("Stack Pointer:\t\t\t0x%.4x\n", core->sp);
-	printf("Stack Pointer Value:\t\t0x%.2x\n", core->ram[CORE_STACK_ADDRESS(core)]);
-	printf("Prev Stack Pointer Value:\t0x%.2x\n", core->ram[CORE_STACK_ADDRESS(core) + 1]);
+
+	printf("Stack Pointer %.4x - 8 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -8), core->ram[CORE_STACK_ADDRESS(core, -8)]);
+	printf("Stack Pointer %.4x - 7 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -7), core->ram[CORE_STACK_ADDRESS(core, -7)]);
+	printf("Stack Pointer %.4x - 6 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -6), core->ram[CORE_STACK_ADDRESS(core, -6)]);
+	printf("Stack Pointer %.4x - 5 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -5), core->ram[CORE_STACK_ADDRESS(core, -5)]);
+	printf("Stack Pointer %.4x - 4 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -4), core->ram[CORE_STACK_ADDRESS(core, -4)]);
+	printf("Stack Pointer %.4x - 3 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -3), core->ram[CORE_STACK_ADDRESS(core, -3)]);
+	printf("Stack Pointer %.4x - 2 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -2), core->ram[CORE_STACK_ADDRESS(core, -2)]);
+	printf("Stack Pointer %.4x - 1 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, -1), core->ram[CORE_STACK_ADDRESS(core, -1)]);
+	printf("Stack Pointer Address:\t\t\t0x%.4x (Value: %.2x)\n", core->sp, core->ram[CORE_STACK_ADDRESS(core, 0)]);
+	printf("Stack Pointer %.4x + 1 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 1), core->ram[CORE_STACK_ADDRESS(core, 1)]);
+	printf("Stack Pointer %.4x + 2 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 2), core->ram[CORE_STACK_ADDRESS(core, 2)]);
+	printf("Stack Pointer %.4x + 3 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 3), core->ram[CORE_STACK_ADDRESS(core, 3)]);
+	printf("Stack Pointer %.4x + 4 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 4), core->ram[CORE_STACK_ADDRESS(core, 4)]);
+	printf("Stack Pointer %.4x + 5 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 5), core->ram[CORE_STACK_ADDRESS(core, 5)]);
+	printf("Stack Pointer %.4x + 6 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 6), core->ram[CORE_STACK_ADDRESS(core, 6)]);
+	printf("Stack Pointer %.4x + 7 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 7), core->ram[CORE_STACK_ADDRESS(core, 7)]);
+	printf("Stack Pointer %.4x + 8 Value:\t0x%.2x\n", CORE_STACK_ADDRESS(core, 8), core->ram[CORE_STACK_ADDRESS(core, 8)]);
 }
 
 // Flag Operations:
@@ -312,7 +392,12 @@ static inline void set_foverflow(core_t *core, uint8_t *a, uint8_t *b, uint8_t *
 
 // Generic Load Function:
 static inline void instr_ld(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(core_t *core)) {
-	*reg = core->ram[addr_mode(core)];
+	uint16_t addy = addr_mode(core);
+	#if CORE_DEBUG == 1
+	printf("addy: %.4x\n", addy);
+	printf("val: %.2x\n", core->ram[addy]);
+	#endif
+	*reg = core->ram[addy];
 	set_fzero(core, reg);
 	set_fsign(core, reg);
 	++(core->pc);
@@ -333,7 +418,7 @@ static inline void instr_t__(core_t *core, const uint8_t *src, uint8_t *dst) {
 }
 
 // Generic Register Address Increment Function:
-static inline void instr_in_(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(core_t *core)) {
+static inline void instr_in_(core_t *core, uint8_t *reg) {
 	++(*reg);
 	set_fzero(core, reg);
 	set_fsign(core, reg);
@@ -341,10 +426,19 @@ static inline void instr_in_(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(c
 }
 
 // Generic Register Address Decrement Function:
-static inline void instr_de_(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(core_t *core)) {
+static inline void instr_de_(core_t *core, uint8_t *reg) {
 	--(*reg);
 	set_fzero(core, reg);
 	set_fsign(core, reg);
+	++(core->pc);
+}
+
+// Generic A/X/Y CMP Implementation:
+static inline void instr_cmp(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(core_t *core)) {
+	uint8_t result = *reg - core->ram[addr_mode(core)];
+	core->fcarry = (result >= 0) ? 1 : 0;
+	set_fzero(core, &result);
+	set_fsign(core, &result);
 	++(core->pc);
 }
 
@@ -368,7 +462,7 @@ static inline void instr_dec(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 
 // Specific Push onto Stack Operation:
 static inline void instr_pha(core_t *core) {
-	core->ram[CORE_STACK_ADDRESS(core)] = core->a;
+	core->ram[CORE_STACK_ADDRESS(core, 0)] = core->a;
 	--(core->sp); // Decrement Stack Pointer
 	++(core->pc);
 }
@@ -376,7 +470,7 @@ static inline void instr_pha(core_t *core) {
 // Specific Pull off the Stack
 static inline void instr_pla(core_t *core) {
 	++(core->sp);
-	core->a = core->ram[CORE_STACK_ADDRESS(core)];
+	core->a = core->ram[CORE_STACK_ADDRESS(core, 0)];
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -386,18 +480,23 @@ static inline void instr_pla(core_t *core) {
 static inline void instr_php(core_t *core) {
 
 	uint8_t status = 0x00;
-	status &= (core->fcarry 	<< 0);
-	status &= (core->fzero 		<< 1);
-	status &= (core->fintdisable 	<< 2);
-	status &= (core->fdec 		<< 3);
-	status &= (core->fvect 		<< 4);
-	status &= (core->falways	<< 5);
-	status &= (core->foverflow 	<< 6);
-	status &= (core->fsign		<< 7);
+	status |= (core->fcarry 	<< 0);
+	status |= (core->fzero 		<< 1);
+	status |= (core->fintdisable 	<< 2);
+	status |= (core->fdec 		<< 3);
+	status |= (core->fvect 		<< 4);
+	status |= (core->falways	<< 5);
+	status |= (core->foverflow 	<< 6);
+	status |= (core->fsign		<< 7);
 
-	core->ram[CORE_STACK_ADDRESS(core)] = status;
+	#if CORE_DEBUG == 1
+	printf("Zero Flag: %.2X\n", core->fzero);
+	printf("Status Word: %.2X\n", status);
+	#endif
 
+	core->ram[CORE_STACK_ADDRESS(core, 0)] = status;
 	--(core->sp); // Decrement Stack Pointer
+
 	++(core->pc);
 }
 
@@ -405,16 +504,16 @@ static inline void instr_php(core_t *core) {
 static inline void instr_plp(core_t *core) {
 
 	++(core->sp);
-	uint8_t status = core->ram[CORE_STACK_ADDRESS(core)];
+	uint8_t status = core->ram[CORE_STACK_ADDRESS(core, 0)];
 
-	core->fcarry = 		(status >> 0) ? 1: 0;
-	core->fzero = 		(status >> 1) ? 1: 0;
-	core->fintdisable = 	(status >> 2) ? 1: 0;
-	core->fdec = 		(status >> 3) ? 1: 0;
-	core->fvect =		(status >> 4) ? 1: 0;
-	core->falways =		(status >> 5) ? 1: 0;
-	core->foverflow = 	(status >> 6) ? 1: 0;
-	core->fsign =		(status >> 7) ? 1: 0;
+	core->fcarry = 		((status >> 0) & 0x01) ? 1 : 0;
+	core->fzero = 		((status >> 1) & 0x01) ? 1 : 0;
+	core->fintdisable = 	((status >> 2) & 0x01) ? 1 : 0;
+	core->fdec = 		((status >> 3) & 0x01) ? 1 : 0;
+	core->fvect =		((status >> 4) & 0x01) ? 1 : 0;
+	core->falways =		((status >> 5) & 0x01) ? 1 : 0;
+	core->foverflow = 	((status >> 6) & 0x01) ? 1 : 0;
+	core->fsign =		((status >> 7) & 0x01) ? 1 : 0;
 
 	++(core->pc);
 }
@@ -422,18 +521,24 @@ static inline void instr_plp(core_t *core) {
 // Specific Logical AND Operation:
 static inline void instr_and(core_t *core, uint16_t (*addr_mode)(core_t *core)) {
 	core->a &= core->ram[addr_mode(core)];
+	set_fzero(core, &(core->a));
+	set_fsign(core, &(core->a));
 	++(core->pc);
 }
 
 // Specific Logical eXclusive OR Operation:
 static inline void instr_eor(core_t *core, uint16_t (*addr_mode)(core_t *core)) {
 	core->a ^= core->ram[addr_mode(core)];
+	set_fzero(core, &(core->a));
+	set_fsign(core, &(core->a));
 	++(core->pc);
 }
 
 // Specific Logical OR Operation:
 static inline void instr_ora(core_t *core, uint16_t (*addr_mode)(core_t *core)) {
 	core->a |= core->ram[addr_mode(core)];
+	set_fzero(core, &(core->a));
+	set_fsign(core, &(core->a));
 	++(core->pc);
 }
 
@@ -447,8 +552,13 @@ static inline void instr_bit(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 	uint8_t mem = core->ram[addr_mode(core)]; 
 
 	((core->a & mem) == 0) ? (core->fzero = 1) : (core->fzero = 0);
-	core->foverflow = (mem >> 4) & 0x01;
-	core->fsign 	= (mem >> 7) & 0x01;
+	core->foverflow = ((mem >> 6) & 0x01);
+	core->fsign 	= ((mem >> 7) & 0x01);
+	
+	#if CORE_DEBUG == 1
+	printf("BIT: "BYTE_TO_BINARY_PATTERN"\n", 
+			BYTE_TO_BINARY(mem)); 
+	#endif
 
 	++(core->pc);
 }
@@ -496,7 +606,7 @@ static inline void instr_rol_acc(core_t *core) {
 	uint8_t oldcarry = core->fcarry;
 	core->fcarry = core->a >> 7; // Carry = Bit 7
 	core->a = core->a << 1; // Shift Left
-	core->a &= oldcarry; // Bit 0 == Old Carry Value
+	core->a |= oldcarry; // Bit 0 == Old Carry Value
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -508,7 +618,7 @@ static inline void instr_rol(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 	uint8_t oldcarry = core->fcarry;
 	core->fcarry = core->ram[address] >> 7; // Carry = Bit 7
 	core->ram[address] = core->ram[address] << 1;
-	core->ram[address] &= oldcarry;
+	core->ram[address] |= oldcarry;
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -519,7 +629,7 @@ static inline void instr_ror_acc(core_t *core) {
 	uint8_t oldcarry = core->fcarry;
 	core->fcarry = (core->a & 0x01); // Carry = Bit 1
 	core->a = core->a >> 1; // Shift Left
-	core->a &= (oldcarry << 7); // Bit 7 == Old Carry Value
+	core->a |= (oldcarry << 7); // Bit 7 == Old Carry Value
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -531,24 +641,96 @@ static inline void instr_ror(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 	uint8_t oldcarry = core->fcarry;
 	core->fcarry = (core->ram[address] & 0x01); // Carry = Bit 7
 	core->ram[address] = core->ram[address] >> 1;
-	core->ram[address] &= (oldcarry << 7);
+	core->ram[address] |= (oldcarry << 7);
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
 }
 
-// todo: actually implement
+static inline void instr_jmp(core_t *core, uint16_t (*addr_mode)(core_t *core)) {
+	core->pc = addr_mode(core);
+}
+
+static inline void instr_jsr(core_t *core, uint16_t (*addr_mode)(core_t *core)) {
+
+	uint16_t jsr_address = addr_mode(core);
+	uint16_t rts_address = core->pc - 1;
+
+	uint8_t msb = rts_address >> 8;
+	uint8_t lsb = (rts_address & 0x00FF);
+
+	core->ram[CORE_STACK_ADDRESS(core, 0)] = msb;
+	--(core->sp);
+
+	core->ram[CORE_STACK_ADDRESS(core, 0)] = lsb;
+	--(core->sp);
+
+	core->pc = jsr_address;
+}
+
+static inline void instr_rts(core_t *core) {
+
+	++(core->sp);
+	uint8_t lsb = core->ram[CORE_STACK_ADDRESS(core, 0)];
+
+	++(core->sp);
+	uint8_t msb = core->ram[CORE_STACK_ADDRESS(core, 0)];
+
+	core->pc = ((msb << 8) + lsb) + 1;
+	#if CORE_DEBUG == 1
+		printf("RTS LSB: %.2x\n", lsb);
+		printf("RTS MSB: %.2x\n", msb);
+		printf("RTS: PC Set to %.4x\n", core->pc);
+	#endif
+}
+
 // Specific ADC Funtion:
 static inline void instr_adc(core_t *core, uint16_t (*addr_mode)(core_t *core)) {
 
-	// Set Overflow:
-	uint8_t addition = core->a + core->ram[addr_mode(core)] + core->fcarry;
-	uint8_t sum = core->a + addition;
-	set_foverflow(core, &(core->a), &addition, &sum);
+	// Our value from our memory addressing mode:
+	uint8_t mem = core->ram[addr_mode(core)];
 
-	// Set Accumulator
+	// Set our overflow
+	// ~(a + b) == If the sign bits were the same (inverse of XOR)
+	// & (a ^ sum) == If the sign bits of a+b were different
+	// & 0x80 mask off the highest bit:
+	core->foverflow = (~(core->a ^ (mem + core->fcarry)) & (core->a ^ (core->a + mem + core->fcarry)) & 0x80) ? 1 : 0;
+
+	// Perform our addition:
+	uint8_t sum = core->a + mem + core->fcarry;
+
+	// Detect a uint8_t wraparound and set carry flag if appropriate
+	core->fcarry = core->a > UCHAR_MAX - (mem + core->fcarry);
+
 	core->a = sum;
 
+	// Zero and Sign:
+	set_fzero(core, &(core->a));
+	set_fsign(core, &(core->a));
+	++(core->pc);
+}
+
+// Specific SBC Funtion:
+static inline void instr_sbc(core_t *core, uint16_t (*addr_mode)(core_t *core)) {
+
+	// Our value from our memory addressing mode:
+	uint8_t mem = core->ram[addr_mode(core)];
+
+	// Set our overflow
+	// ~(a + b) == If the sign bits were the same (inverse of XOR)
+	// & (a ^ sum) == If the sign bits of a+b were different
+	// & 0x80 mask off the highest bit:
+	core->foverflow = (~(core->a ^ (mem - (1 - core->fcarry))) & (core->a ^ (core->a - mem - (1 - core->fcarry))) & 0x80) ? 1 : 0;
+
+	// Perform our addition:
+	uint8_t sum = core->a - mem - (1 - core->fcarry);
+
+	// Detect a uint8_t wraparound and set carry flag if appropriate
+	core->fcarry = core->a > (mem - (1 - core->fcarry));
+
+	core->a = sum;
+
+	// Zero and Sign:
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -685,10 +867,10 @@ void exec_core(core_t *core) {
 
 		// Stack Operations:
 			case TXS:
-				instr_t__(core, &(core->x), &(core->ram[CORE_STACK_ADDRESS(core)]));
+				instr_t__(core, &(core->x), &(core->ram[CORE_STACK_ADDRESS(core, 0)]));
 				break;
 			case TSX:
-				instr_t__(core, &(core->ram[CORE_STACK_ADDRESS(core)]), &(core->x));
+				instr_t__(core, &(core->ram[CORE_STACK_ADDRESS(core, 0)]), &(core->x));
 				break;
 			case PHA:
 				instr_pha(core);
@@ -727,6 +909,76 @@ void exec_core(core_t *core) {
 				break;
 			case ADC_IND_Y:
 				instr_adc(core, addr_indirect_y);
+				break;
+
+			case SBC_I:
+				instr_sbc(core, addr_immediate);
+				break;
+			case SBC_ZPG:
+				instr_sbc(core, addr_zeropage);
+				break;
+			case SBC_ZPG_X:
+				instr_sbc(core, addr_zeropage_x);
+				break;
+			case SBC_A:
+				instr_sbc(core, addr_absolute);
+				break;
+			case SBC_A_X:
+				instr_sbc(core, addr_absolute_x);
+				break;
+			case SBC_A_Y:
+				instr_sbc(core, addr_absolute_y);
+				break;
+			case SBC_IND_X:
+				instr_sbc(core, addr_indirect_x);
+				break;
+			case SBC_IND_Y:
+				instr_sbc(core, addr_indirect_y);
+				break;
+
+			case CMP_I:
+				instr_cmp(core, &(core->a), addr_immediate);
+				break;
+			case CMP_ZPG:
+				instr_cmp(core, &(core->a), addr_zeropage);
+				break;
+			case CMP_ZPG_X:
+				instr_cmp(core, &(core->a), addr_zeropage_x);
+				break;
+			case CMP_A:
+				instr_cmp(core, &(core->a), addr_absolute);
+				break;
+			case CMP_A_X:
+				instr_cmp(core, &(core->a), addr_absolute_x);
+				break;
+			case CMP_A_Y:
+				instr_cmp(core, &(core->a), addr_absolute_y);
+				break;
+			case CMP_IND_X:
+				instr_cmp(core, &(core->a), addr_indirect_x);
+				break;
+			case CMP_IND_Y:
+				instr_cmp(core, &(core->a), addr_indirect_y);
+				break;
+
+			case CPX_I:
+				instr_cmp(core, &(core->x), addr_immediate);
+				break;
+			case CPX_ZPG:
+				instr_cmp(core, &(core->x), addr_zeropage);
+				break;
+			case CPX_A:
+				instr_cmp(core, &(core->x), addr_absolute);
+				break;
+
+			case CPY_I:
+			      	instr_cmp(core, &(core->y), addr_immediate);
+			      	break;
+			case CPY_ZPG:
+				instr_cmp(core, &(core->y), addr_zeropage);
+			      	break;
+			case CPY_A:
+				instr_cmp(core, &(core->y), addr_absolute);
 				break;
 
 		// Logic Operations:
@@ -819,19 +1071,28 @@ void exec_core(core_t *core) {
 				instr_inc(core, addr_absolute_x);
 				break;
 			case INX:
-				instr_in_(core, &(core->x), addr_zeropage);
+				instr_in_(core, &(core->x));
 				break;
 			case INY:
-				instr_in_(core, &(core->y), addr_zeropage);
+				instr_in_(core, &(core->y));
 				break;
-			case DEC:
+			case DEC_ZPG:
 				instr_dec(core, addr_zeropage);
 				break;
+			case DEC_ZPG_X:
+				instr_dec(core, addr_zeropage_x);
+				break;
+			case DEC_A:
+				instr_dec(core, addr_absolute);
+				break;
+			case DEC_A_X:
+				instr_dec(core, addr_absolute_x);
+				break;
 			case DEX:
-				instr_de_(core, &(core->x), addr_zeropage);
+				instr_de_(core, &(core->x));
 				break;
 			case DEY:
-				instr_de_(core, &(core->y), addr_zeropage);
+				instr_de_(core, &(core->y));
 				break;
 			case BIT_ZPG:
 				instr_bit(core, addr_zeropage);
@@ -905,6 +1166,20 @@ void exec_core(core_t *core) {
 				instr_ror(core, addr_absolute_x);
 				break;
 
+		// Jumps:
+			case JMP_A:
+				instr_jmp(core, addr_absolute);
+				break;
+			case JMP_IND:
+				instr_jmp(core, addr_indirect);
+				break;
+			case JSR_A:
+				instr_jsr(core, addr_absolute);
+				break;
+			case RTS:
+				instr_rts(core);
+				break;
+
 		// Flag Sets and Clears:
 			case CLC:
 				core->fcarry = 0;
@@ -927,6 +1202,14 @@ void exec_core(core_t *core) {
 				++(core->pc);
 				break;
 
+			#if CORE_DEBUG == 1
+			case 0x22:
+				dump_core_state(core);
+				printf("\n");
+				++(core->pc);
+				break;
+			#endif
+
 			default:
 				++(core->pc);
 				break;
@@ -934,22 +1217,76 @@ void exec_core(core_t *core) {
 	}
 }
 
+void pg_jmptest(core_t *core) {
+
+	core->ram[0x0000] = JMP_A;
+	core->ram[0x0001] = 0x00;
+	core->ram[0x0002] = 0xC0;
+
+	core->ram[0xC000] = LDA_ZPG;
+	core->ram[0xC001] = 0x31;
+	core->ram[0xC002] = PHA;
+	core->ram[0xC003] = 0x22;
+
+	core->ram[0xC004] = JSR_A;
+	core->ram[0xC005] = 0xD0;
+	core->ram[0xC006] = 0xDC;
+	core->ram[0xC007] = 0x22; //DEBUG
+
+	core->ram[0xC008] = 0xFF;
+
+	core->ram[0xDCD0] = LDA_I;
+	core->ram[0xDCD1] = 0x66;
+	core->ram[0xDCD2] = LDA_I;
+	core->ram[0xDCD3] = 0x67;
+	core->ram[0xDCD4] = 0x22; //DEBUG
+	core->ram[0xDCD5] = RTS;
+
+	//core->ram[0x000A] = PLA;
+	//core->ram[0x000B] = 0x22;
+
+	// .data
+	core->ram[0x0030] = 0x07; 
+	core->ram[0x0031] = 0x09; 
+	core->ram[0x0032] = 0x0A; 
+
+}
+
 int main(void) {
 
 	core_t *core = init_core();
 
-	core->ram[0x0000] = LDX_ZPG;
-	core->ram[0x0001] = 0xCC;
+	//pg_jmptest(core);
 
-	core->ram[0x0002] = TXS;
+	core->ram[0x0000] = SEC;
+	core->ram[0x0001] = 0x22;
+	core->ram[0x0002] = LDA_I;
+	core->ram[0x0003] = 0x0E;
+	core->ram[0x0004] = 0x22;
 
-	core->ram[0x0003] = INX;
-	core->ram[0x0004] = TXA;
-	core->ram[0x0005] = PHA;
-	
-	core->ram[0x0006] = 0xFF;
+	core->ram[0x0005] = SBC_I; // LowByte 0x0E - 0x0F
+	core->ram[0x0006] = 0x0F;
+	core->ram[0x0007] = 0x22;
 
-	core->ram[0x000F] = 0xFF; // Exit
+	core->ram[0x0008] = PHA; // Push Low Byte onto Stack
+	core->ram[0x0009] = 0x22;
+
+	core->ram[0x000A] = LDA_I;
+	core->ram[0x000B] = 0x02; // High Byte 0x02
+	core->ram[0x000C] = 0x22;
+
+	core->ram[0x000D] = SBC_I; // High Byte 0x00 
+	core->ram[0x000E] = 0x00; 
+	core->ram[0x000F] = 0x22;
+
+	core->ram[0x0010] = PHA; // Push High Byte onto Stack
+	core->ram[0x0011] = 0x22;
+
+	core->ram[0x0012] = 0xFF;
+
+	// .data
+	core->ram[0x0033] = 0x00;
+	core->ram[0x0034] = 50;
 
 	exec_core(core);
 	
