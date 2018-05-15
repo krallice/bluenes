@@ -226,11 +226,19 @@ static inline void set_foverflow(core_t *core, uint8_t *a, uint8_t *b, uint8_t *
 
 // Generic Load Function:
 static inline void instr_ld(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(core_t *core)) {
+
 	uint16_t addy = addr_mode(core);
-	#if CORE_DEBUG == 1
-	printf("addy: %.4x\n", addy);
-	printf("val: %.2x\n", core->ram[addy]);
+
+	#if CORE_NESTEST == 1
+	if (addr_mode == addr_absolute) {
+		uint8_t oldval = core->ram[addy];
+		char absolute_val[32];
+		sprintf(absolute_val, " = %.2X", oldval);
+		strcat(core->d_str, absolute_val);
+	}
 	#endif
+
+
 	*reg = core->ram[addy];
 	set_fzero(core, reg);
 	set_fsign(core, reg);
@@ -239,7 +247,19 @@ static inline void instr_ld(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(co
 
 // Generic Store Function:
 static inline void instr_st(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(core_t *core)) {
-	core->ram[addr_mode(core)] = *reg;
+
+	uint16_t addy = addr_mode(core);
+
+	#if CORE_NESTEST == 1
+	if (addr_mode == addr_absolute) {
+		uint8_t oldval = core->ram[addy];
+		char absolute_val[32];
+		sprintf(absolute_val, " = %.2X", oldval);
+		strcat(core->d_str, absolute_val);
+	}
+	#endif
+
+	core->ram[addy] = *reg;
 	++(core->pc);
 }
 
@@ -269,8 +289,14 @@ static inline void instr_de_(core_t *core, uint8_t *reg) {
 
 // Generic A/X/Y CMP Implementation:
 static inline void instr_cmp(core_t *core, uint8_t *reg, uint16_t (*addr_mode)(core_t *core)) {
-	uint8_t result = *reg - core->ram[addr_mode(core)];
-	core->fcarry = (result >= 0) ? 1 : 0;
+	uint8_t val = core->ram[addr_mode(core)];
+	uint8_t result = *reg - val; 
+	core->fcarry = (*reg >= val) ? 1 : 0;
+	#if CORE_NESTEST == 1
+	//printf("CMP: VAL: %.2X RESULT: %.2X CARRY: %.2X\n", val, result, core->fcarry);
+	#endif
+	//core->fcarry = *reg > (val - (1 - core->fcarry));
+	//core->fcarry = *reg > (val);
 	set_fzero(core, &result);
 	set_fsign(core, &result);
 	++(core->pc);
@@ -307,6 +333,19 @@ static inline void instr_pla(core_t *core) {
 	core->a = core->ram[CORE_STACK_ADDRESS(core, 0)];
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
+	++(core->pc);
+}
+
+// Specific X <-> Stack Pointer Transfers:
+static inline void instr_tsx(core_t *core) {
+	core->x = core->sp;
+	set_fzero(core, &(core->x));
+	set_fsign(core, &(core->x));
+	++(core->pc);
+}
+
+static inline void instr_txs(core_t *core) {
+	core->sp= core->x;
 	++(core->pc);
 }
 
@@ -405,6 +444,9 @@ static inline void instr_bit(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 static inline void instr_asl_acc(core_t *core) {
 	core->fcarry = core->a >> 7;
 	core->a = core->a << 1;
+	#if CORE_NESTEST == 1
+	strcat(core->d_str, "A");
+	#endif 
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -424,6 +466,9 @@ static inline void instr_asl(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 static inline void instr_lsr_acc(core_t *core) {
 	core->fcarry = (core->a & 0x01); // Carry = Bit Zero
 	core->a = core->a >> 1;
+	#if CORE_NESTEST == 1
+	strcat(core->d_str, "A");
+	#endif 
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -445,6 +490,9 @@ static inline void instr_rol_acc(core_t *core) {
 	core->fcarry = core->a >> 7; // Carry = Bit 7
 	core->a = core->a << 1; // Shift Left
 	core->a |= oldcarry; // Bit 0 == Old Carry Value
+	#if CORE_NESTEST == 1
+	strcat(core->d_str, "A");
+	#endif 
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -468,6 +516,9 @@ static inline void instr_ror_acc(core_t *core) {
 	core->fcarry = (core->a & 0x01); // Carry = Bit 1
 	core->a = core->a >> 1; // Shift Left
 	core->a |= (oldcarry << 7); // Bit 7 == Old Carry Value
+	#if CORE_NESTEST == 1
+	strcat(core->d_str, "A");
+	#endif 
 	set_fzero(core, &(core->a));
 	set_fsign(core, &(core->a));
 	++(core->pc);
@@ -528,14 +579,19 @@ static inline void instr_adc(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 	// Our value from our memory addressing mode:
 	uint8_t mem = core->ram[addr_mode(core)];
 
+	// Perform our addition:
+	uint8_t sum = core->a + mem + core->fcarry;
+
 	// Set our overflow
 	// ~(a + b) == If the sign bits were the same (inverse of XOR)
 	// & (a ^ sum) == If the sign bits of a+b were different
 	// & 0x80 mask off the highest bit:
-	core->foverflow = (~(core->a ^ (mem + core->fcarry)) & (core->a ^ (core->a + mem + core->fcarry)) & 0x80) ? 1 : 0;
-
-	// Perform our addition:
-	uint8_t sum = core->a + mem + core->fcarry;
+	core->foverflow = (~(core->a ^ mem) & (core->a ^ sum) & 0x80) ? 1 : 0;
+		//#if CORE_NESTEST == 1
+		//if ( core->foverflow == 1 ) {
+			//printf("ADC OVERFLOW\n");
+		//}
+		//#endif
 
 	// Detect a uint8_t wraparound and set carry flag if appropriate
 	core->fcarry = core->a > UCHAR_MAX - (mem + core->fcarry);
@@ -554,17 +610,25 @@ static inline void instr_sbc(core_t *core, uint16_t (*addr_mode)(core_t *core)) 
 	// Our value from our memory addressing mode:
 	uint8_t mem = core->ram[addr_mode(core)];
 
+	// Credit to https://stackoverflow.com/questions/29193303/6502-emulation-proper-way-to-implement-adc-and-sbc
+	mem = ~mem;
+
+	// Perform our addition:
+	uint8_t sum = core->a  + mem + core->fcarry;
+
 	// Set our overflow
 	// ~(a + b) == If the sign bits were the same (inverse of XOR)
 	// & (a ^ sum) == If the sign bits of a+b were different
 	// & 0x80 mask off the highest bit:
-	core->foverflow = (~(core->a ^ (mem - (1 - core->fcarry))) & (core->a ^ (core->a - mem - (1 - core->fcarry))) & 0x80) ? 1 : 0;
-
-	// Perform our addition:
-	uint8_t sum = core->a - mem - (1 - core->fcarry);
+	core->foverflow = (~(core->a ^ mem) & (core->a ^ sum) & 0x80) ? 1 : 0;
+		//#if CORE_NESTEST == 1
+		//if ( core->foverflow == 1 ) {
+			//printf("ADC OVERFLOW\n");
+		//}
+		//#endif
 
 	// Detect a uint8_t wraparound and set carry flag if appropriate
-	core->fcarry = core->a > (mem - (1 - core->fcarry));
+	core->fcarry = core->a > UCHAR_MAX - (mem + core->fcarry);
 
 	core->a = sum;
 
@@ -735,7 +799,7 @@ void instr_rti(core_t *core) {
 	core->fintdisable = 	((status >> 2) & 0x01) ? 1 : 0;
 	core->fdec = 		((status >> 3) & 0x01) ? 1 : 0;
 	core->fvect =		((status >> 4) & 0x01) ? 1 : 0;
-	core->falways =		((status >> 5) & 0x01) ? 1 : 0;
+	core->falways =		(1);
 	core->foverflow = 	((status >> 6) & 0x01) ? 1 : 0;
 	core->fsign =		((status >> 7) & 0x01) ? 1 : 0;
 
@@ -1019,10 +1083,10 @@ void step_core(core_t *core) {
 
 	// Stack Operations:
 		case TXS:
-			instr_t__(core, &(core->x), &(core->ram[CORE_STACK_ADDRESS(core, 0)]));
+			instr_txs(core);
 			break;
 		case TSX:
-			instr_t__(core, &(core->ram[CORE_STACK_ADDRESS(core, 0)]), &(core->x));
+			instr_tsx(core);
 			break;
 		case PHA:
 			instr_pha(core);
