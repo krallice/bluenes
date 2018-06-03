@@ -170,29 +170,6 @@ void print_nestest_diag(nes_t *nes) {
 
 }
 
-void reset_nestest_diag(nes_t *nes) {
-
-	core_t *core = nes->core;
-
-	// Reset Debugs:
-	strcpy(core->d_str, "     ");
-
-	core->d_op = 0;
-	core->d_op1_en = 0;
-	core->d_op2_en = 0;
-	core->d_op1 = 0;
-	core->d_op2 = 0;
-
-	core->d_a = 0;
-	core->d_x = 0;
-	core->d_y = 0;
-
-	core->d_sp = 0;
-	core->d_p = 0;
-	core->d_pc = 0;
-
-}
-
 void run_nestest(nes_t *nes) {
 
 	// Evenly spread cycles over the period of a second to achieve NESBLUE_CPU_FREQ:
@@ -207,7 +184,7 @@ void run_nestest(nes_t *nes) {
 		for ( nes->core->cyclecount %= cycles_per_step; nes->core->cyclecount < cycles_per_step; ) {
 
 			// Step through CPU:
-			reset_nestest_diag(nes);
+			reset_core_debug(core);
 			step_core(nes->core);
 			print_nestest_diag(nes);
 

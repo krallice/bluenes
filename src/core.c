@@ -1054,6 +1054,28 @@ void do_nmi(core_t *core) {
 	core->pc = (uint16_t)(core->ram[CORE_NMI_HI] << 8) + core->ram[CORE_NMI_LO];
 }
 
+// Debug Functions:
+void reset_core_debug(core_t *core) {
+
+	// Reset Debugs:
+	strcpy(core->d_str, "     ");
+
+	core->d_op = 0;
+	core->d_op1_en = 0;
+	core->d_op2_en = 0;
+	core->d_op1 = 0;
+	core->d_op2 = 0;
+
+	core->d_a = 0;
+	core->d_x = 0;
+	core->d_y = 0;
+
+	core->d_sp = 0;
+	core->d_p = 0;
+	core->d_pc = 0;
+
+}
+
 // Main excecution cycle and instruction dispatch table:
 void step_core(core_t *core) {
 
